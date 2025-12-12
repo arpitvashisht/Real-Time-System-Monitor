@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Real-Time System Monitor </title>
+
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+  /* ---------- Colors & Base ------- */
+  :root{
+    --bg1: #071224;
+    --bg2: #0f2a36;
+    --card: rgba(255,255,255,0.04);
+    --glass: rgba(255,255,255,0.03);
+    --muted: #99b7c6;
+    --accent: #00d0ff;      /* neon accent */
+    --accent-2: #6be04b;    /* cpu green */
+    --warn: #f12d13;        /* memory orange */
+    --highlight: rgba(255,255,255,0.08);
+  }
+
+  html,body{height:100%; margin:0; font-family:Inter, "Poppins", system-ui, Arial; background: linear-gradient(135deg,var(--bg1),var(--bg2)); color:#e6f7ff;}
+  .wrap { max-width:1200px; margin:18px auto; padding:14px; }
+
+  h1{ text-align:center; margin:6px 0 18px; font-size:28px; font-weight:700;
+      background:linear-gradient(90deg,var(--accent),#0072ff); -webkit-background-clip:text; color:transparent; }
+
+  /* top controls */
+  .top-controls { display:flex; justify-content:flex-end; gap:10px; margin-bottom:14px; align-items:center; }
+  .btn { background:var(--glass); border:1px solid rgba(255,255,255,0.06); color:var(--muted);
+         padding:8px 12px; border-radius:10px; cursor:pointer; transition:all .18s; font-weight:600; }
+  .btn:hover{ transform:translateY(-2px); box-shadow:0 8px 18px rgba(0,0,0,0.45); color:#fff; }
+
+  /* layout */
+  .grid { display:grid; grid-template-columns: 1fr 420px; gap:18px; align-items:start; }
+  .card{ background:var(--card); border-radius:12px; padding:18px; box-shadow: 0 12px 30px rgba(0,0,0,.4); border:1px solid rgba(255,255,255,0.02); transition:transform .18s; }
+  .card:hover{ transform:translateY(-4px); }
+
+  .cpu-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px; }
+  .cpu-left { font-weight:700; color:var(--accent-2); font-size:20px; }
+  .small-muted { color:var(--muted); font-size:13px; }
+
+  /* cpu chart */
+  #cpuChart{ width:100%; height:200px; }
+
+  /* donut */
+  .donut-wrap { display:flex; align-items:center; justify-content:center; flex-direction:column; gap:10px; }
+  #memDonut { width:260px; height:260px; }
+
+  .legend { display:flex; gap:8px; align-items:center; margin-top:6px; }
+  .legend .dot{ width:12px; height:12px; border-radius:3px; display:inline-block; }
+  .legend .label{ color:var(--muted); font-size:13px; margin-left:6px; }
+
+  /* processes */
+  .table-wrap { margin-top:12px; overflow:hidden; border-radius:8px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; color:#eaf9ff; }
+  thead th { text-align:left; padding:12px; background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)); color:var(--muted); font-weight:700; }
+  tbody td { padding:12px; border-bottom:1px solid rgba(255,255,255,0.02); }
+  tbody tr:nth-child(even){ background: linear-gradient(90deg, rgba(255,255,255,0.01), rgba(255,255,255,0)); }
+  tbody tr.flash { animation: flashRow .9s; }
+  @keyframes flashRow { 0%{background: rgba(124,255,168,0.08);} 100%{background:transparent;} }
+
+  /* last updated & footer */
+  .meta { display:flex; justify-content:space-between; align-items:center; margin-top:10px; color:var(--muted); font-size:13px; }
+  footer { margin-top:18px; color:var(--muted); text-align:center; font-size:13px; }
+
+  /* responsive */
+  @media (max-width:980px){
+    .grid{ grid-template-columns: 1fr; }
+    #memDonut{ width:200px; height:200px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Premium Real-Time System Monitor</h1>
+
+  <div class="top-controls">
+    <div class="small-muted" id="lastUpdated">Last updated: --</div>
+    <button class="btn" id="refreshBtn">Refresh Now</button>
+    <button class="btn" id="exportBtn">Export CSV</button>
+  </div>
+
+  <div class="grid">
+    <!-- LEFT: CPU + processes -->
+    <div class="card">
+      <div class="cpu-head">
+        <div>
+          <div class="cpu-left" id="cpuText">CPU: 0%</div>
+          <div class="small-muted">Realtime CPU usage & history (last 100 samples)</div>
+        </div>
+        <div style="text-align:right">
+          <div class="small-muted">Auto-refresh: <span id="autoState">ON</span></div>
+          <div id="cpuMini" style="height:26px; width:120px; background:rgba(0,0,0,0.04); border-radius:12px; overflow:hidden; margin-top:6px;">
+            <div id="cpuMiniBar" style="height:100%; width:0%; background:linear-gradient(90deg,var(--accent-2),var(--accent));"></div>
+          </div>
+        </div>
+      </div>
+
+      <canvas id="cpuChart"></canvas>
+
+      <div class="table-wrap">
+        <table id="procTable">
+          <thead>
+            <tr><th style="width:90px">PID</th><th>Process Name</th><th style="width:90px">CPU%</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- RIGHT: Memory donut -->
+    <div class="card donor-card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div style="font-weight:700; font-size:18px">Memory Usage</div>
+          <div class="small-muted">Used vs Free</div>
+        </div>
+        <div class="small-muted">Updated live</div>
+      </div>
+
+      <div class="donut-wrap" style="margin-top:6px;">
+        <canvas id="memDonut"></canvas>
+        <div class="legend">
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span class="dot" style="background:var(--warn)"></span><span class="label">Used</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span class="dot" style="background:#143a45"></span><span class="label">Free</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="meta"><div id="statusText">Status: Live</div><div id="notes" class="small-muted"></div></div>
+
+  <footer>Made with ❤️ </footer>
+</div>
+
+<script>
+/* ---------- Config ---------- */
+const HISTORY_LEN = 100;      // more points = smoother / premium feel
+let cpuHistory = new Array(HISTORY_LEN).fill(0);
+let autoRefresh = true;
+
+/* ---------- Chart.js setup ---------- */
+const cpuCtx = document.getElementById('cpuChart').getContext('2d');
+const cpuChart = new Chart(cpuCtx, {
+  type: 'line',
+  data: {
+    labels: Array(HISTORY_LEN).fill(''),
+    datasets: [{
+      data: cpuHistory.slice(),
+      borderColor: '#00d0ff',
+      backgroundColor: 'rgba(0,208,255,0.06)',
+      fill: true,
+      pointRadius: 0,
+      tension: 0.24,
+      borderWidth: 2
+    }]
+  },
+  options: {
+    responsive: true,
+    animation: { duration: 200 },
+    scales: {
+      x: { display:false },
+      y: { min:0, max:100, ticks:{ color:'#9fcad9' } }
+    },
+    plugins: { legend:{ display:false } }
+  }
+});
+
+const memCtx = document.getElementById('memDonut').getContext('2d');
+const memChart = new Chart(memCtx, {
+  type: 'doughnut',
+  data: {
+    labels:['Used','Free'],
+    datasets:[{
+      data:[0,100],
+      backgroundColor:['#ff944d','#0f3940'],
+      borderWidth:0
+    }]
+  },
+  options:{
+    responsive:true,
+    cutout: '70%',
+    plugins:{ legend:{ display:false } }
+  }
+});
+
+/* ---------- Helpers ------ */
+function formatNow(){
+  const d = new Date();
+  return d.toLocaleString();
+}
+function flashTable(){
+  const tbodyRows = document.querySelectorAll('#procTable tbody tr');
+  tbodyRows.forEach((r,i)=>{
+    r.classList.add('flash');
+    setTimeout(()=> r.classList.remove('flash'), 900 + i*10);
+  });
+}
+
+/* ---------- Data fetch & UI update ---------- */
+async function updateData(){
+  try {
+    const res = await fetch('/api/data', {cache:'no-store'});
+    if(!res.ok) throw new Error('fetch failed');
+    const data = await res.json();
+
+    // CPU text + mini bar
+    const cpu = Number(data.cpu || 0);
+    document.getElementById('cpuText').innerText = `CPU: ${cpu.toFixed(1)}%`;
+    document.getElementById('cpuMiniBar').style.width = Math.min(cpu,100) + '%';
+
+    // push history and update chart
+    cpuHistory.push(cpu);
+    while(cpuHistory.length > HISTORY_LEN) cpuHistory.shift();
+    cpuChart.data.datasets[0].data = cpuHistory.slice();
+    cpuChart.update();
+
+    // memory donut
+    const mem = Number(data.memory || 0);
+    memChart.data.datasets[0].data = [mem, Math.max(0,100-mem)];
+    memChart.update();
+
+    // processes table (top 10)
+    const tbody = document.querySelector('#procTable tbody');
+    tbody.innerHTML = '';
+    (data.processes || []).forEach(p => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${p.pid}</td><td>${escapeHtml(p.name||'')}</td><td>${Number(p.cpu_percent||0).toFixed(1)}</td>`;
+      tbody.appendChild(tr);
+    });
+
+    // last updated
+    document.getElementById('lastUpdated').innerText = 'Last updated: ' + formatNow();
+
+  } catch(err) {
+    console.error('updateData error', err);
+    document.getElementById('statusText').innerText = 'Status: Error fetching data';
+  }
+}
+
+/* ---------- CSV export ---------- */
+function exportCSV(){
+  const rows = [['PID','Name','CPU%']];
+  document.querySelectorAll('#procTable tbody tr').forEach(tr=>{
+    const cols = tr.querySelectorAll('td');
+    if(cols.length===3) rows.push([cols[0].innerText, cols[1].innerText, cols[2].innerText]);
+  });
+  let csv = rows.map(r => r.map(cell => `"${String(cell).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:]/g,'-');
+  a.href = url; a.download = `processes_${stamp}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ---------- UI bindings ---------- */
+document.getElementById('exportBtn').addEventListener('click', ()=> {
+  exportCSV();
+  // small visual feedback
+  document.getElementById('exportBtn').style.transform = 'scale(0.98)';
+  setTimeout(()=> document.getElementById('exportBtn').style.transform = '', 220);
+});
+
+document.getElementById('refreshBtn').addEventListener('click', ()=>{
+  updateData().then(()=> {
+    // flash table + chart highlight
+    flashTable();
+    const orig = cpuChart.options.plugins?.legend?.display;
+    // small highlight: change border color then back
+    const old = cpuChart.data.datasets[0].borderColor;
+    cpuChart.data.datasets[0].borderColor = '#fff';
+    cpuChart.update();
+    setTimeout(()=>{ cpuChart.data.datasets[0].borderColor = old; cpuChart.update(); }, 700);
+  });
+});
+
+/* ---------- small utils ---------- */
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+/* ---------- auto refresh loop ---------- */
+let loop = setInterval(()=>{ if(autoRefresh) updateData(); }, 800); // faster refresh for snappy feel
+
+/* ---------- init ---------- */
+updateData();
+</script>
+</body>
+</html>
